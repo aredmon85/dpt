@@ -11,10 +11,7 @@
 #include <netinet/udp.h>
 #include <netinet/ip.h>
 #include <time.h>
-#include <linux/if_ether.h>
-#include <linux/if_packet.h>
 #include <arpa/inet.h>
-#include <net/if.h>
 #define ETH_HDR_LEN 18
 /* Quantum is the number of intervals per second to use when attempting to reach a certain packet rate per second */
 #define QUANTUM 1000
@@ -211,7 +208,7 @@ int main(int argc, char *argv[]) {
                         if(atoi(optarg) <= 16384 && atoi(optarg) >= 1) {
                                 num_flows = atoi(optarg);
                                 } else {
-                                fprintf(stderr,"Maximum flows supported: 16384");
+                                fprintf(stderr,"Maximum flows supported: 16384\n");
                                 exit(EXIT_FAILURE);
                         }
                         break;
@@ -225,7 +222,7 @@ int main(int argc, char *argv[]) {
                         if(atoi(optarg) <= 1000000 && atoi(optarg) >= 1000 && (atoi(optarg) % 10000 == 0)){
                                 packet_rate = atoi(optarg);
                         } else {
-                                fprintf(stderr,"Packet rate must be between 10000 and 1000000 packets/sec, and in increments of 10000");
+                                fprintf(stderr,"Packet rate must be between 10000 and 1000000 packets/sec, and in increments of 10000\n");
                                 exit(EXIT_FAILURE);
                         }
                         break;
@@ -244,6 +241,10 @@ int main(int argc, char *argv[]) {
                         exit(EXIT_FAILURE);
                 }
         }
+	if(argc < 2) {
+		print_usage();
+		exit(EXIT_FAILURE);
+	}
         destination = argv[argc - 1];
         printf("Targeting: %s\nSource: %s\nProtocol: %d\nDestination Port: %d\nPacket Size: %d\nFlow Count: %d\nDuration: %d\nPacket Rate: %d KPPS\n",
                         destination, source, protocol, destination_port, packet_size, num_flows, duration, (packet_rate/1000));
