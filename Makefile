@@ -1,2 +1,6 @@
+CC=gcc
+CFLAGS=-Wall -I.
 dpt: dpt.c
-	gcc -o dpt dpt.c -I.
+	$(CC) $(CFLAGS) -o dpt dpt.c
+clean:
+	rm -f dpt

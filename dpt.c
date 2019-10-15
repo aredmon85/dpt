@@ -68,7 +68,7 @@ struct aughdr {
         uint16_t length;
         char *data;
 };
-unsigned short csum(unsigned short *ptr,int nbytes) {
+unsigned short csum(unsigned short *ptr,uint16_t nbytes) {
         register long sum;
         unsigned short oddbyte;
         register short answer;
@@ -168,15 +168,14 @@ uint64_t nsend(int duration, int packet_rate, char *datagram, int ip_tot_len, in
         return total_packets_sent;
 };
 int main(int argc, char *argv[]) {
-        int protocol = 0;
-        int packet_size = 0;
-        int num_flows = 1;
-        int option = 0;
-        int tos = 0;
-        int ttl = 255;
-        int duration = 10;
-        int packet_rate = 0;
-        int packet_rate_bucket = 0;
+        uint8_t protocol = 0;
+        uint16_t packet_size = 0;
+        uint16_t num_flows = 1;
+        uint8_t option = 0;
+        uint8_t tos;
+	uint8_t ttl = 255;
+        uint16_t duration = 10;
+        uint32_t packet_rate = 0;
         char* destination;
         char* source;
         uint16_t destination_port = 1985;
@@ -256,41 +255,38 @@ int main(int argc, char *argv[]) {
         struct iphdr *iph_inner;
 
         uint64_t total_packets_sent = 0;
-        int initial_source_port = 1024;
-        int current_source_port = 1024;
-        int last_source_port = initial_source_port + num_flows;
-        int header_len = 0; 
-	int data_len = 0;
+        uint16_t initial_source_port = 1024;
+        uint16_t current_source_port = 1024;
+        uint16_t header_len = 0; 
+	uint16_t data_len = 0;
 
         struct udp_pseudo_hdr *upsh;
-        struct tcp_pseudo_hdr *tpsh;
-        struct tcphdr *tcph;
         struct udphdr *udph;
         struct grehdr *greh;
         struct aughdr *augh;
         struct sockaddr_in sin;
-	int sin_size = sizeof(struct sockaddr_in);
+	uint16_t sin_size = sizeof(struct sockaddr_in);
         sin.sin_family = AF_INET;
         sin.sin_port = htons(initial_source_port);
         sin.sin_addr.s_addr = inet_addr(destination);
 
         iph->ihl = 5;
         iph->version = 4;
-        iph->tos = 0;
+        iph->tos = tos;
         iph->protocol = protocol;
         iph->frag_off = 0;
         iph->ttl = ttl;
         iph->saddr = inet_addr(source);
         iph->daddr = inet_addr(destination);
 
-        int s = socket (AF_INET, SOCK_RAW, IPPROTO_RAW);
+        uint16_t s = socket (AF_INET, SOCK_RAW, IPPROTO_RAW);
         if(s == -1) {
                 fprintf(stderr,"Failed to create socket");
                 exit(EXIT_FAILURE);
         }
 
-        int sockflag = 1;
-        const int *val = &sockflag;
+        uint8_t sockflag = 1;
+        const uint8_t *val = &sockflag;
         if(setsockopt(s, IPPROTO_IP, IP_HDRINCL, val, sizeof (1)) < 0) {
                 fprintf(stderr,"Error setting IP_HDRINCL");
                 exit(EXIT_FAILURE);
