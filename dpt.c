@@ -237,7 +237,6 @@ int main(int argc, char *argv[]) {
                         print_usage();
                         exit(EXIT_SUCCESS);
                 default: print_usage();
-                        puts("DEFAULT HIT");
 			exit(EXIT_FAILURE);
                 }
         }
