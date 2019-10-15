@@ -171,7 +171,7 @@ int main(int argc, char *argv[]) {
         uint8_t protocol = 0;
         uint16_t packet_size = 0;
         uint16_t num_flows = 1;
-        uint8_t option = 0;
+        int option = 0;
         uint8_t tos;
 	uint8_t ttl = 255;
         uint16_t duration = 10;
@@ -237,7 +237,8 @@ int main(int argc, char *argv[]) {
                         print_usage();
                         exit(EXIT_SUCCESS);
                 default: print_usage();
-                        exit(EXIT_FAILURE);
+                        puts("DEFAULT HIT");
+			exit(EXIT_FAILURE);
                 }
         }
 	if(argc < 2) {
@@ -397,9 +398,11 @@ int main(int argc, char *argv[]) {
 
                 upsh = (struct udp_pseudo_hdr *) pseudogram;
                 set_udp_phdr(&upsh, iph, initial_source_port, destination_port, data, pseudogram);
-		total_packets_sent = nsend(duration, packet_rate, datagram, (iph->tot_len), num_flows, data_len, s, (struct sockaddr *)&sin, current_source_port, initial_source_port, sin_size, upsh,udph );
+		total_packets_sent = nsend(duration, packet_rate, datagram, (iph->tot_len), num_flows, data_len, s, (struct sockaddr *)&sin, current_source_port, initial_source_port, sin_size, upsh, udph);
                 break;
         case 255:
+		fprintf(stderr,"Hold those horses - auggienet is not currently supported.  Good things take time :).\n");
+		exit(EXIT_FAILURE);
                 header_len = sizeof(struct iphdr) + sizeof(struct aughdr);
                 data = datagram + header_len;;
                 pad_data((sizeof(struct iphdr) + sizeof(struct udphdr)), packet_size, &data, &strdata);
@@ -409,7 +412,7 @@ int main(int argc, char *argv[]) {
                 augh->timestamp = 1;
                 augh->length = sizeof(struct aughdr) + data_len;
                 augh->data = data;
-
+		
                 /* Set IP length - inclusive of all encapsulated data */
                 iph->tot_len = header_len + data_len;
 		total_packets_sent = nsend(duration, packet_rate, datagram, (iph->tot_len), num_flows, data_len, s, (struct sockaddr *)&sin, current_source_port, initial_source_port, sin_size, upsh,udph );
