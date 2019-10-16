@@ -16,7 +16,7 @@
 /* Quantum is the number of intervals per second to use when attempting to reach a certain packet rate per second */
 #define QUANTUM 1000
 void print_usage() {
-        printf("Usage: dpt <DESTINATION> -s SOURCE_ADDRESS -p PROTOCOL -l BYTE_LENGTH -f NUMBER OF FLOWS -q TOS -d DURATION -t TTL -r PPS Rate\n");
+        printf("Usage: dpt <DESTINATION> -s SOURCE_ADDRESS -P DESTINATION_PORT -p PROTOCOL -l BYTE_LENGTH -f NUMBER OF FLOWS -q TOS -d DURATION -t TTL -r PPS Rate\n");
 }
 struct grehdr {
         uint16_t flags;
@@ -68,30 +68,27 @@ struct aughdr {
         uint16_t length;
         char *data;
 };
-unsigned short csum(unsigned short *ptr,uint16_t nbytes) {
-        register long sum;
-        unsigned short oddbyte;
-        register short answer;
-
-        sum = 0;
-        while(nbytes > 1) {
-        sum += *ptr++;
-        nbytes -= 2;
-        }
-        if(nbytes == 1) {
-        oddbyte = 0;
-        *((u_char*)&oddbyte) = *(u_char*)ptr;
-        sum += oddbyte;
-        }
-        sum = (sum>>16)+(sum & 0xffff);
-        sum = sum + (sum>>16);
-        answer = (short) ~sum;
-        return (answer);
+unsigned short csum(unsigned short *ptr, int nbytes) {
+	register long sum;
+	unsigned short oddbyte;
+	register short answer;
+	sum = 0;
+	while(nbytes > 1) {
+		sum += *ptr++;
+		nbytes -= 2;
+	}
+	if(nbytes == 1) {
+		oddbyte = 0;
+		*((u_char*)&oddbyte) = *(u_char*)ptr;
+		sum += oddbyte;
+	}
+	sum = (sum>>16)+(sum & 0xffff);
+	sum = sum + (sum>>16);
+	answer = (short) ~sum;
+	return (answer);
 };
-void pad_data(int header_len, int packet_size, char **data, char **strdata) {
-        /* Minimum IP length is 46 bytes (with a 802.1Q tag), otherwise Ethernet padding is added
-           Avoid Ethernet padding and construct an IP packet at a minimum length of 46 bytes */
-        if(packet_size >= (header_len + ETH_HDR_LEN)) {
+void pad_data(uint8_t header_len, uint16_t packet_size, char **data, char **strdata) {
+        if(packet_size >= (64)) {
                 packet_size -= (header_len + ETH_HDR_LEN);
                 (*strdata) = malloc(packet_size + 1);
                 memset((*strdata), 'X', packet_size);
@@ -106,12 +103,14 @@ void set_udp_phdr(struct udp_pseudo_hdr **upsh, struct iphdr *iph, uint16_t sour
         (*upsh)->check = 0;
         (*upsh)->source_port = htons(source_port);
         (*upsh)->destination_port = htons(dest_port);
-        (*upsh)->length = htons(sizeof(struct udphdr) + strlen(data));
+        (*upsh)->length = htons(sizeof(struct udphdr));
+	(*upsh)->proto_length = htons(sizeof(struct udphdr));
+	(*upsh)->length = htons(sizeof(struct udphdr) + strlen(data));
         (*upsh)->proto_length = htons(sizeof(struct udphdr) + strlen(data));
         (*upsh)->data = pseudogram + sizeof(struct udp_pseudo_hdr);
         memcpy(&(*upsh)->data,data,strlen(data));
 };
-uint64_t nsend(int duration, int packet_rate, char *datagram, int ip_tot_len, int num_flows, int data_len, int socket, struct sockaddr *sin, uint16_t current_source_port, uint16_t initial_source_port, int sin_size, struct udp_pseudo_hdr *upsh, struct udphdr *udph ) {
+uint64_t nsend(uint16_t duration, uint32_t packet_rate, char *datagram, uint16_t ip_tot_len, uint16_t num_flows, int data_len, int socket, struct sockaddr *sin, uint16_t current_source_port, uint16_t initial_source_port, int sin_size, struct udp_pseudo_hdr *upsh, struct udphdr *udph ) {
 	/* Can probably break this function up further */
 	uint64_t diff_time = 0;
 	uint64_t total_packets_sent = 0;
@@ -258,7 +257,7 @@ int main(int argc, char *argv[]) {
         uint16_t initial_source_port = 1024;
         uint16_t current_source_port = 1024;
         uint16_t header_len = 0; 
-	uint16_t data_len = 0;
+	int data_len = 0;
 
         struct udp_pseudo_hdr *upsh;
         struct udphdr *udph;
@@ -279,7 +278,7 @@ int main(int argc, char *argv[]) {
         iph->saddr = inet_addr(source);
         iph->daddr = inet_addr(destination);
 
-        uint16_t s = socket (AF_INET, SOCK_RAW, IPPROTO_RAW);
+        int s = socket (AF_INET, SOCK_RAW, IPPROTO_RAW);
         if(s == -1) {
                 fprintf(stderr,"Failed to create socket");
                 exit(EXIT_FAILURE);
