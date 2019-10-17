@@ -12,9 +12,11 @@
 #include <netinet/ip.h>
 #include <time.h>
 #include <arpa/inet.h>
+#include <errno.h>
 #define ETH_HDR_LEN 18
 /* Quantum is the number of intervals per second to use when attempting to reach a certain packet rate per second */
 #define QUANTUM 1000
+extern int errno;
 void print_usage() {
 	printf("Usage: dpt <DESTINATION> -s SOURCE_ADDRESS -P DESTINATION_PORT -p PROTOCOL -l BYTE_LENGTH -f NUMBER OF FLOWS -q TOS -d DURATION -t TTL -r PPS Rate\n");
 }
@@ -118,6 +120,7 @@ uint64_t nsend(uint16_t duration, uint32_t packet_rate, char *datagram, uint16_t
 	uint64_t usec_duration = duration * 1000000;
 	int packet_per_quantum = (packet_rate / QUANTUM);
 	int packet_rate_bucket = packet_per_quantum;
+	int errnum;
 	clock_gettime(CLOCK_MONOTONIC_RAW,&start);
 	clock_gettime(CLOCK_MONOTONIC_RAW,&current);
 	if(packet_rate > 0) {
@@ -129,7 +132,8 @@ uint64_t nsend(uint16_t duration, uint32_t packet_rate, char *datagram, uint16_t
 		/* Unlimited packet rate */
 		if(packet_rate == 0) {
 			if(sendto(socket, datagram, ip_tot_len, MSG_NOSIGNAL | MSG_DONTWAIT, sin, sin_size) < 0) {
-				fprintf(stderr,"Failed to sendto packet");
+				errnum = errno;
+				fprintf(stderr,"Failed to sendto packet: %s\n", strerror(errnum));
 				exit(EXIT_FAILURE);
 			}
 			total_packets_sent++;
@@ -137,7 +141,8 @@ uint64_t nsend(uint16_t duration, uint32_t packet_rate, char *datagram, uint16_t
 		} else {
 			if(packet_rate_bucket > 0) {
 				if(sendto(socket, datagram, ip_tot_len, MSG_NOSIGNAL | MSG_DONTWAIT, sin, sin_size) < 0) {
-					fprintf(stderr,"Failed to sendto packet");
+					errnum = errno;
+					fprintf(stderr,"Failed to sendto packet: %s\n", strerror(errnum));
 					exit(EXIT_FAILURE);
 				}
 				total_packets_sent++;
@@ -258,7 +263,7 @@ int main(int argc, char *argv[]) {
 	uint16_t current_source_port = 1024;
 	uint16_t header_len = 0; 
 	int data_len = 0;
-
+	int errnum;
 	struct udp_pseudo_hdr *upsh;
 	struct udphdr *udph;
 	struct grehdr *greh;
@@ -280,14 +285,16 @@ int main(int argc, char *argv[]) {
 
 	int s = socket (AF_INET, SOCK_RAW, IPPROTO_RAW);
 	if(s == -1) {
-		fprintf(stderr,"Failed to create socket");
+		errnum = errno;
+		fprintf(stderr,"Failed to create socket: %s\n",strerror(errnum));
 		exit(EXIT_FAILURE);
 	}
 
 	uint8_t sockflag = 1;
 	const uint8_t *val = &sockflag;
 	if(setsockopt(s, IPPROTO_IP, IP_HDRINCL, val, sizeof (1)) < 0) {
-		fprintf(stderr,"Error setting IP_HDRINCL");
+		errnum = errno;
+		fprintf(stderr,"Error setting IP_HDRINCL: %s\n",strerror(errnum));
 		exit(EXIT_FAILURE);
 	}
 	printf("Size of message: %d\n", iph->tot_len);
@@ -420,5 +427,5 @@ int main(int argc, char *argv[]) {
 			exit(EXIT_FAILURE);
 	}
 	printf("%lu packets sent in %d seconds\n",total_packets_sent,duration);
-
+	exit(EXIT_SUCCESS);
 }
