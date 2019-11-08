@@ -20,6 +20,19 @@ extern int errno;
 void print_usage() {
 	printf("Usage: dpt <DESTINATION> -s SOURCE_ADDRESS -P DESTINATION_PORT -p PROTOCOL -l BYTE_LENGTH -f NUMBER OF FLOWS -q TOS -d DURATION -t TTL -r PPS Rate\n");
 }
+enum proto_int {
+	ICMP=1,
+	IPIP=4,
+	TCP=6,
+	UDP=17,
+	GRE=47,
+	AUGGIENET=255
+};
+struct datagram_node {
+	char *datagram;   
+	struct datagram_node *next;
+	struct datagram_node *prev;
+};	
 struct grehdr {
 	uint16_t flags;
 	uint16_t proto;
@@ -89,6 +102,23 @@ unsigned short csum(unsigned short *ptr, int nbytes) {
 	answer = (short) ~sum;
 	return (answer);
 };
+void append_datagram_node(struct datagram_node **head, char *datagram) {
+	struct datagram_node *new_datagram_node = (struct datagram_node *)malloc(sizeof(struct datagram_node));
+	struct datagram_node *last = *head;
+	new_datagram_node->datagram = datagram;
+	new_datagram_node->next = NULL;
+	if(*head == NULL) {
+		new_datagram_node->prev = NULL;
+		*head = new_datagram_node;
+		return;
+	}
+	while(last->next != NULL) {
+		last = last->next;
+	}
+	last->next = new_datagram_node;
+	new_datagram_node->prev = last;
+	return;
+}
 void pad_data(uint8_t header_len, uint16_t packet_size, char **data, char **strdata) {
 	if(packet_size >= (64)) {
 		packet_size -= (header_len + ETH_HDR_LEN);
@@ -112,8 +142,38 @@ void set_udp_phdr(struct udp_pseudo_hdr **upsh, struct iphdr *iph, uint16_t sour
 	(*upsh)->data = pseudogram + sizeof(struct udp_pseudo_hdr);
 	memcpy(&(*upsh)->data,data,strlen(data));
 };
-uint64_t nsend(uint16_t duration, uint32_t packet_rate, char *datagram, uint16_t ip_tot_len, uint16_t num_flows, int data_len, int socket, struct sockaddr *sin, uint16_t current_source_port, uint16_t initial_source_port, int sin_size, struct udp_pseudo_hdr *upsh, struct udphdr *udph ) {
-	/* Can probably break this function up further */
+uint64_t usend(struct datagram_node *head, uint16_t send_size, uint16_t duration, int socket, struct sockaddr *sin, int sin_size) {
+	uint64_t diff_time = 0;
+	uint64_t total_packets_sent = 0;
+	struct timespec start, current;
+	uint64_t usec_duration = duration * 1000000;
+	int errnum;
+	struct datagram_node *node_to_send = head;
+	clock_gettime(CLOCK_MONOTONIC_RAW,&start);
+	clock_gettime(CLOCK_MONOTONIC_RAW,&current);
+	while(diff_time < usec_duration) {
+		if(sendto(socket, node_to_send->datagram, send_size, MSG_NOSIGNAL | MSG_DONTWAIT, sin, sin_size) < 0) {
+			errnum = errno;
+			if(errnum != 11) {
+				/* Don't exit if socket would block/be unavailable - just try again */
+				fprintf(stderr,"Failed to sendto packet: %s\n", strerror(errnum));
+				exit(EXIT_FAILURE);
+			} else {
+				total_packets_sent--;
+			}
+		}
+		total_packets_sent++;
+		if(total_packets_sent % 1000 == 0) {
+			clock_gettime(CLOCK_MONOTONIC_RAW,&current);
+		}
+		diff_time = (current.tv_sec - start.tv_sec) * 1000000 + (current.tv_nsec - start.tv_nsec) / 1000;
+		/* Advance the pointer, tail already has next pointer set to head */
+		node_to_send = node_to_send->next;
+	}
+	return total_packets_sent;
+
+};
+uint64_t rsend(struct datagram_node *head, uint16_t send_size, uint16_t duration, uint32_t packet_rate, int socket, struct sockaddr *sin, int sin_size) {
 	uint64_t diff_time = 0;
 	uint64_t total_packets_sent = 0;
 	struct timespec start, current, rate_quantum_start, rate_quantum_current;
@@ -121,55 +181,135 @@ uint64_t nsend(uint16_t duration, uint32_t packet_rate, char *datagram, uint16_t
 	int packet_per_quantum = (packet_rate / QUANTUM);
 	int packet_rate_bucket = packet_per_quantum;
 	int errnum;
+	struct datagram_node *node_to_send = head;
 	clock_gettime(CLOCK_MONOTONIC_RAW,&start);
 	clock_gettime(CLOCK_MONOTONIC_RAW,&current);
-	if(packet_rate > 0) {
-		clock_gettime(CLOCK_MONOTONIC_RAW,&rate_quantum_start);
-		clock_gettime(CLOCK_MONOTONIC_RAW,&rate_quantum_current);
-	}
+	clock_gettime(CLOCK_MONOTONIC_RAW,&rate_quantum_start);
+	clock_gettime(CLOCK_MONOTONIC_RAW,&rate_quantum_current);
 	while(diff_time < usec_duration) {
-		udph->check = csum((unsigned short*)upsh , sizeof(struct udp_pseudo_hdr) + data_len);
-		/* Unlimited packet rate */
-		if(packet_rate == 0) {
-			if(sendto(socket, datagram, ip_tot_len, MSG_NOSIGNAL | MSG_DONTWAIT, sin, sin_size) < 0) {
+		/* User defined packet rate - define a bucket of packets to send per quantum, send so long as the bucket is non-zero, and refill the bucket every quantum */
+		if(packet_rate_bucket > 0) {
+			if(sendto(socket, node_to_send->datagram, send_size, MSG_NOSIGNAL | MSG_DONTWAIT, sin, sin_size) < 0) {
 				errnum = errno;
-				fprintf(stderr,"Failed to sendto packet: %s\n", strerror(errnum));
-				exit(EXIT_FAILURE);
-			}
-			total_packets_sent++;
-			/* User defined packet rate - define a bucket of packets to send per quantum, send so long as the bucket is non-zero, and refill the bucket every quantum */
-		} else {
-			if(packet_rate_bucket > 0) {
-				if(sendto(socket, datagram, ip_tot_len, MSG_NOSIGNAL | MSG_DONTWAIT, sin, sin_size) < 0) {
-					errnum = errno;
+				if(errnum != 11) {
+					/* Don't exit if socket would block/be unavailable - just try again */
 					fprintf(stderr,"Failed to sendto packet: %s\n", strerror(errnum));
 					exit(EXIT_FAILURE);
+				} else {
+					total_packets_sent--;
+					packet_rate_bucket++;
 				}
-				total_packets_sent++;
-				packet_rate_bucket--;
 			}
-			if(total_packets_sent % (QUANTUM / 100) == 0) {
-				clock_gettime(CLOCK_MONOTONIC_RAW,&rate_quantum_current);
-			}
-			/* Sample 1000 times a second */
-			if(((rate_quantum_current.tv_sec - rate_quantum_start.tv_sec) * 1000000 + (rate_quantum_current.tv_nsec - rate_quantum_start.tv_nsec) / 1000) >= QUANTUM) {
-				packet_rate_bucket = packet_per_quantum;
-				clock_gettime(CLOCK_MONOTONIC_RAW,&rate_quantum_start);
-			}
+			total_packets_sent++;
+			packet_rate_bucket--;
 		}
-		if(current_source_port < (initial_source_port + num_flows)) {
-			udph->source = htons(current_source_port);
-			upsh->source_port = udph->source;
-		} else {
-			current_source_port = initial_source_port;
+		if(total_packets_sent % (QUANTUM / 100) == 0) {
+			clock_gettime(CLOCK_MONOTONIC_RAW,&rate_quantum_current);
 		}
-		current_source_port++;
+		/* Sample 1000 times a second */
+		if(((rate_quantum_current.tv_sec - rate_quantum_start.tv_sec) * 1000000 + (rate_quantum_current.tv_nsec - rate_quantum_start.tv_nsec) / 1000) >= QUANTUM) {
+			packet_rate_bucket = packet_per_quantum;
+			clock_gettime(CLOCK_MONOTONIC_RAW,&rate_quantum_start);
+		}
 		if(total_packets_sent % 1000 == 0) {
 			clock_gettime(CLOCK_MONOTONIC_RAW,&current);
 		}
 		diff_time = (current.tv_sec - start.tv_sec) * 1000000 + (current.tv_nsec - start.tv_nsec) / 1000;
+		/* Advance the pointer, tail already has next pointer set to head */
+		node_to_send = node_to_send->next;
 	}
 	return total_packets_sent;
+
+};
+char* create_udp_packet(uint8_t protocol, uint8_t ttl, uint8_t tos, char *daddr, char *saddr, uint16_t src_port, uint16_t dst_port, uint16_t packet_size) {
+	uint16_t header_len = (sizeof(struct iphdr) + sizeof(struct udphdr));
+	uint16_t byte_size = header_len + (packet_size - 64);
+	char *datagram, *pseudogram, *data, *strdata;
+	datagram = malloc(byte_size);
+	pseudogram = malloc(byte_size);
+	memset(datagram,0,byte_size);
+	memset(pseudogram,0,byte_size);
+	struct iphdr *iph = (struct iphdr *) datagram;
+	struct udp_pseudo_hdr *upsh;
+	struct udphdr *udph;
+	iph->ihl = 5;
+	iph->version = 4;
+	iph->tos = tos;
+	iph->protocol = protocol;
+	iph->frag_off = 0;
+	iph->ttl = ttl;
+	iph->saddr = inet_addr(saddr);
+	iph->daddr = inet_addr(daddr);
+
+	udph = (struct udphdr *) (datagram + sizeof(struct iphdr));
+	data = datagram + header_len;
+	pad_data(header_len, packet_size, &data, &strdata);
+	uint16_t data_len = strlen(data);
+	/* Set IP length - inclusive of all encapsulated data */
+	iph->tot_len = header_len + data_len;
+	udph->dest = htons(dst_port);
+	udph->len = htons(sizeof(struct udphdr) + data_len);
+	udph->source = htons(src_port);
+
+	upsh = (struct udp_pseudo_hdr *) pseudogram;
+	set_udp_phdr(&upsh, iph, src_port, dst_port, data, pseudogram);
+	udph->check = csum((unsigned short*)upsh , sizeof(struct udp_pseudo_hdr) + data_len);
+	return datagram;
+};
+char* create_gre_packet(uint8_t protocol, uint8_t ttl, uint8_t tos, char *daddr, char *saddr, uint16_t src_port, uint16_t dst_port, uint16_t packet_size) {
+	uint16_t header_len = sizeof(struct iphdr) + sizeof(struct grehdr) + sizeof(struct iphdr) + sizeof(struct udphdr);
+	uint16_t byte_size = header_len + (packet_size - 64);
+	char *datagram, *pseudogram, *data, *strdata;
+	datagram = malloc(byte_size);
+	pseudogram = malloc(byte_size);
+	memset(datagram,0,byte_size);
+	memset(pseudogram,0,byte_size);
+
+	struct iphdr *iph = (struct iphdr *) datagram;
+	struct grehdr *greh = (struct grehdr *) (datagram + sizeof(struct iphdr));
+	struct iphdr *iph_inner = (struct iphdr *) (datagram + sizeof(struct iphdr) + sizeof(struct grehdr));
+	struct udphdr *udph = (struct udphdr *) (datagram + sizeof(struct iphdr) + sizeof(struct grehdr) + sizeof(struct iphdr));
+	struct udp_pseudo_hdr *upsh;
+	iph->ihl = 5;
+	iph->version = 4;
+	iph->tos = tos;
+	iph->protocol = protocol;
+	iph->frag_off = 0;
+	iph->ttl = ttl;
+	iph->saddr = inet_addr(saddr);
+	iph->daddr = inet_addr(daddr);
+
+	/* GRE and inner IP headers */
+	greh->flags = htons(0);
+	greh->proto = htons(2048);
+
+	iph_inner->ihl = 5;
+	iph_inner->version = 4;
+	iph_inner->tos = 0;
+
+	/* Inner IP protocol should be UDP */
+	iph_inner->protocol = 17;
+	iph_inner->frag_off = 0;
+	iph_inner->ttl = ttl;
+	iph_inner->saddr = inet_addr(saddr);
+	iph_inner->daddr = inet_addr(daddr);
+	data = datagram + header_len;
+	pad_data((sizeof(struct iphdr) + sizeof(struct grehdr) + sizeof(struct iphdr) + sizeof(struct udphdr)), packet_size, &data, &strdata);
+	uint16_t data_len = strlen(data);
+	/* Set IP length - inclusive of all encapsulated data */
+	iph_inner->tot_len = htons(sizeof(struct iphdr) + sizeof(struct udphdr) + data_len);
+	iph->tot_len = header_len + data_len;
+	/* No kernel/hardware assistance for encapsulated IP header checksums - do it manually */
+	iph_inner->check = csum((unsigned short*)iph_inner, sizeof(struct iphdr));
+
+	udph->dest = htons(dst_port);
+	udph->len = htons(sizeof(struct udphdr) + data_len);
+	udph->source = htons(src_port);
+
+	upsh = (struct udp_pseudo_hdr *) pseudogram;
+	set_udp_phdr(&upsh, iph, src_port, dst_port, data, pseudogram);
+	udph->check = csum((unsigned short*)upsh , sizeof(struct udp_pseudo_hdr) + data_len);
+	return datagram;
 };
 int main(int argc, char *argv[]) {
 	uint8_t protocol = 0;
@@ -251,180 +391,119 @@ int main(int argc, char *argv[]) {
 	destination = argv[argc - 1];
 	printf("Targeting: %s\nSource: %s\nProtocol: %d\nDestination Port: %d\nPacket Size: %d\nFlow Count: %d\nDuration: %d\nPacket Rate: %d KPPS\n",
 			destination, source, protocol, destination_port, packet_size, num_flows, duration, (packet_rate/1000));
-	char datagram[4096],pseudogram[4096], *data, *strdata;
-	memset(datagram,0,4096);
-	memset(pseudogram,0,4096);
-
-	struct iphdr *iph = (struct iphdr *) datagram;
-	struct iphdr *iph_inner;
 
 	uint64_t total_packets_sent = 0;
-	uint16_t initial_source_port = 1024;
-	uint16_t current_source_port = 1024;
-	uint16_t header_len = 0; 
-	int data_len = 0;
+	uint16_t send_size = 0;
 	int errnum;
-	struct udp_pseudo_hdr *upsh;
-	struct udphdr *udph;
-	struct grehdr *greh;
-	struct aughdr *augh;
 	struct sockaddr_in sin;
 	uint16_t sin_size = sizeof(struct sockaddr_in);
 	sin.sin_family = AF_INET;
-	sin.sin_port = htons(initial_source_port);
+	sin.sin_port = htons(1024);
 	sin.sin_addr.s_addr = inet_addr(destination);
-
-	iph->ihl = 5;
-	iph->version = 4;
-	iph->tos = tos;
-	iph->protocol = protocol;
-	iph->frag_off = 0;
-	iph->ttl = ttl;
-	iph->saddr = inet_addr(source);
-	iph->daddr = inet_addr(destination);
-
-	int s = socket (AF_INET, SOCK_RAW, IPPROTO_RAW);
-	if(s == -1) {
+	uint16_t dst_port = destination_port;
+	uint16_t src_port = 1024;
+	uint16_t iterator = 0;
+	int sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+	if (sock < 0) {
 		errnum = errno;
 		fprintf(stderr,"Failed to create socket: %s\n",strerror(errnum));
 		exit(EXIT_FAILURE);
 	}
-
 	uint8_t sockflag = 1;
 	const uint8_t *val = &sockflag;
-	if(setsockopt(s, IPPROTO_IP, IP_HDRINCL, val, sizeof (1)) < 0) {
+	if(setsockopt(sock, IPPROTO_IP, IP_HDRINCL, val, sizeof (1)) < 0) {
 		errnum = errno;
 		fprintf(stderr,"Error setting IP_HDRINCL: %s\n",strerror(errnum));
 		exit(EXIT_FAILURE);
 	}
-	printf("Size of message: %d\n", iph->tot_len);
-
+	struct datagram_node *head = NULL;
+	struct datagram_node *tail = NULL;
 	switch(protocol){
-		/* UDP */
-		case 17:
-			header_len = (sizeof(struct iphdr) + sizeof(struct udphdr));
-			udph = (struct udphdr *) (datagram + sizeof(struct iphdr));
-			data = datagram + header_len;
-			pad_data(header_len, packet_size, &data, &strdata);
-			data_len = strlen(data);
+		case UDP:
+			send_size = sizeof(struct iphdr) + sizeof(struct udphdr) + (packet_size - 64);
+			for(iterator = 0;iterator < num_flows;iterator++) {
+				char *datagram = create_udp_packet(protocol,ttl,tos,destination,source,src_port,dst_port,packet_size);
+				append_datagram_node(&head,datagram);
+				src_port++;
+			}
 
-			/* Set IP length - inclusive of all encapsulated data */
-			iph->tot_len = header_len + data_len;
-
-			udph->dest = htons(destination_port);
-			udph->len = htons(sizeof(struct udphdr) + data_len);
-			udph->source = htons(initial_source_port);
-
-			upsh = (struct udp_pseudo_hdr *) pseudogram;
-			set_udp_phdr(&upsh, iph, initial_source_port, destination_port, data, pseudogram);
-			total_packets_sent = nsend(duration, packet_rate, datagram, (iph->tot_len), num_flows, data_len, s, (struct sockaddr *)&sin, current_source_port, initial_source_port, sin_size, upsh,udph );	
 			break;
-			/* GRE */
-		case 47:
-			header_len = sizeof(struct iphdr) + sizeof(struct grehdr) + sizeof(struct iphdr) + sizeof(struct udphdr);
-			data = datagram + header_len;
-
-			pad_data((sizeof(struct iphdr) + sizeof(struct udphdr)), packet_size, &data, &strdata);
-
-			data_len = strlen(data);
-
-			/* GRE and inner IP headers */
-			greh = (struct grehdr *) (datagram + sizeof(struct iphdr));
-			iph_inner = (struct iphdr *) (datagram + sizeof(struct iphdr) + sizeof(struct grehdr));
-
-			greh->flags = htons(0);
-			greh->proto = htons(2048);
-
-			iph_inner->ihl = 5;
-			iph_inner->version = 4;
-			iph_inner->tos = 0;
-
-			/* Inner IP protocol should be UDP */
-			iph_inner->protocol = 17;
-			iph_inner->frag_off = 0;
-			iph_inner->ttl = ttl;
-			iph_inner->saddr = inet_addr(source);
-			iph_inner->daddr = inet_addr(destination);
-			iph->protocol = 47;
-
-			/* UDP in GRE since it's straightforward */
-			udph = (struct udphdr *) (datagram + sizeof(struct iphdr) + sizeof(struct grehdr) + sizeof(struct iphdr));
-
-			/* Set IP length - inclusive of all encapsulated data */
-			iph->tot_len = header_len + data_len;
-			iph_inner->tot_len = htons(sizeof(struct iphdr) + sizeof(struct udphdr) + data_len);
-
-			/* No kernel/hardware assistance for encapsulated IP header checksums - do it manually */
-			iph_inner->check = csum((unsigned short*)iph_inner, sizeof(struct iphdr));
-
-			udph->dest = htons(destination_port);
-			udph->len = htons(sizeof(struct udphdr) + data_len);
-			udph->source = htons(initial_source_port);
-
-			upsh = (struct udp_pseudo_hdr *) pseudogram;
-			set_udp_phdr(&upsh, iph, initial_source_port, destination_port, data, pseudogram);
-			total_packets_sent = nsend(duration, packet_rate, datagram, (iph->tot_len), num_flows, data_len, s, (struct sockaddr *)&sin, current_source_port, initial_source_port, sin_size, upsh,udph );
+		case GRE:
+			send_size = sizeof(struct iphdr) + sizeof(struct grehdr) + sizeof(struct iphdr) + sizeof(struct udphdr) + (packet_size - 64);
+			for(iterator = 0;iterator < num_flows;iterator++) {
+				char *datagram = create_gre_packet(protocol,ttl,tos,destination,source,src_port,dst_port,packet_size);
+				append_datagram_node(&head,datagram);
+				src_port++;
+			}
 			break;
-			/* IP in IP */
-		case 4:
-			header_len = sizeof(struct iphdr) + sizeof(struct iphdr) + sizeof(struct udphdr);
-			data = datagram + header_len;;
+			/*
+			   case IPIP:
+			   header_len = sizeof(struct iphdr) + sizeof(struct iphdr) + sizeof(struct udphdr);
+			   data = datagram + header_len;;
 
-			pad_data((sizeof(struct iphdr) + sizeof(struct udphdr)), packet_size, &data, &strdata);
-			data_len = strlen(data);
-			printf("Size of data: %d\n", data_len);
-			/* Inner IP header */
-			iph_inner = (struct iphdr *) (datagram + sizeof(struct iphdr));
+			   pad_data((sizeof(struct iphdr) + sizeof(struct udphdr)), packet_size, &data, &strdata);
+			   data_len = strlen(data);
+			   printf("Size of data: %d\n", data_len);
+			   iph_inner = (struct iphdr *) (datagram + sizeof(struct iphdr));
 
-			iph_inner->ihl = 5;
-			iph_inner->version = 4;
-			iph_inner->tos = 0;
+			   iph_inner->ihl = 5;
+			   iph_inner->version = 4;
+			   iph_inner->tos = 0;
 
-			/* Inner IP protocol should be UDP */
-			iph_inner->protocol = 17;
-			iph_inner->frag_off = 0;
-			iph_inner->ttl = ttl;
-			iph_inner->saddr = inet_addr(source);
-			iph_inner->daddr = inet_addr(destination);
-			iph->protocol = 4;
+			   iph_inner->protocol = 17;
+			   iph_inner->frag_off = 0;
+			   iph_inner->ttl = ttl;
+			   iph_inner->saddr = inet_addr(source);
+			   iph_inner->daddr = inet_addr(destination);
+			   iph->protocol = 4;
 
-			/* UDP in IP in IP since it's straightforward */
-			udph = (struct udphdr *) (datagram + sizeof(struct iphdr) + sizeof(struct iphdr));
+			   udph = (struct udphdr *) (datagram + sizeof(struct iphdr) + sizeof(struct iphdr));
 
-			/* Set IP length - inclusive of all encapsulated data */
-			iph->tot_len = header_len + data_len;
-			iph_inner->tot_len = htons(sizeof(struct iphdr) + sizeof(struct udphdr) + data_len);
+			   iph->tot_len = header_len + data_len;
+			   iph_inner->tot_len = htons(sizeof(struct iphdr) + sizeof(struct udphdr) + data_len);
 
-			/* No kernel/hardware assistance for encapsulated IP header checksums - do it manually */
-			iph_inner->check = csum((unsigned short*)iph_inner, sizeof(struct iphdr));
-			udph->dest = htons(destination_port);
-			udph->len = htons(sizeof(struct udphdr) + data_len);
-			udph->source = htons(initial_source_port);
+			   iph_inner->check = csum((unsigned short*)iph_inner, sizeof(struct iphdr));
+			   udph->dest = htons(destination_port);
+			   udph->len = htons(sizeof(struct udphdr) + data_len);
+			   udph->source = htons(initial_source_port);
 
-			upsh = (struct udp_pseudo_hdr *) pseudogram;
-			set_udp_phdr(&upsh, iph, initial_source_port, destination_port, data, pseudogram);
-			total_packets_sent = nsend(duration, packet_rate, datagram, (iph->tot_len), num_flows, data_len, s, (struct sockaddr *)&sin, current_source_port, initial_source_port, sin_size, upsh, udph);
-			break;
-		case 255:
-			fprintf(stderr,"Hold those horses - auggienet is not currently supported.  Good things take time :).\n");
-			exit(EXIT_FAILURE);
-			header_len = sizeof(struct iphdr) + sizeof(struct aughdr);
-			data = datagram + header_len;;
-			pad_data((sizeof(struct iphdr) + sizeof(struct udphdr)), packet_size, &data, &strdata);
-			data_len = strlen(data);
-			augh = (struct aughdr *) (datagram + sizeof(struct iphdr));
-			augh->msg_id = 1;
-			augh->timestamp = 1;
-			augh->length = sizeof(struct aughdr) + data_len;
-			augh->data = data;
+			   upsh = (struct udp_pseudo_hdr *) pseudogram;
+			   set_udp_phdr(&upsh, iph, initial_source_port, destination_port, data, pseudogram);
+			   total_packets_sent = nsend(duration, packet_rate, datagram, (iph->tot_len), num_flows, data_len, sock, (struct sockaddr *)&sin, current_source_port, initial_source_port, sin_size, upsh, udph);
+			   break;
+			   case AUGGIENET:
+			   fprintf(stderr,"Hold those horses - auggienet is not currently supported.  Good things take time :).\n");
+			   exit(EXIT_FAILURE);
+			   header_len = sizeof(struct iphdr) + sizeof(struct aughdr);
+			   data = datagram + header_len;;
+			   pad_data((sizeof(struct iphdr) + sizeof(struct udphdr)), packet_size, &data, &strdata);
+			   data_len = strlen(data);
+			   augh = (struct aughdr *) (datagram + sizeof(struct iphdr));
+			   augh->msg_id = 1;
+			   augh->timestamp = 1;
+			   augh->length = sizeof(struct aughdr) + data_len;
+			   augh->data = data;
 
-			/* Set IP length - inclusive of all encapsulated data */
-			iph->tot_len = header_len + data_len;
-			total_packets_sent = nsend(duration, packet_rate, datagram, (iph->tot_len), num_flows, data_len, s, (struct sockaddr *)&sin, current_source_port, initial_source_port, sin_size, upsh,udph );
-			break;
+			   iph->tot_len = header_len + data_len;
+			   total_packets_sent = nsend(duration, packet_rate, datagram, (iph->tot_len), num_flows, data_len, sock, (struct sockaddr *)&sin, current_source_port, initial_source_port, sin_size, upsh,udph );
+			   break;
+			   */
 		default:
 			fprintf(stderr,"Protocol number not supported");
 			exit(EXIT_FAILURE);
+	}
+	tail = head;
+	while(tail->next != NULL) {
+		tail = tail->next;
+	}
+	/* Set tail->next to head so we can loop through the linked list repeatedly */
+	if(tail->next == NULL) {
+		tail->next = head;
+	}
+	if(packet_rate == 0) {
+		total_packets_sent = usend(head,send_size,duration,sock,(struct sockaddr *)&sin,sin_size);
+	} else {
+		total_packets_sent = rsend(head,send_size,duration,packet_rate,sock,(struct sockaddr *)&sin,sin_size);
 	}
 	printf("%lu packets sent in %d seconds\n",total_packets_sent,duration);
 	exit(EXIT_SUCCESS);
