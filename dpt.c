@@ -13,6 +13,8 @@
 #include <time.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#define UDP_L3_LEN 28
+#define GRE_L3_LEN 52
 #define ETH_HDR_LEN 18
 /* Quantum is the number of intervals per second to use when attempting to reach a certain packet rate per second */
 #define QUANTUM 1000
@@ -123,7 +125,6 @@ void pad_data(uint8_t header_len, uint16_t packet_size, char **data, char **strd
 	/* 20 bytes of preamble, SFD, and IFG are on the wire and handled at layer 1 */
 	if(packet_size >= (64)) {
 		packet_size -= (header_len + ETH_HDR_LEN);
-		printf("Padding data out to %d bytes\n",packet_size);
 		(*strdata) = malloc(packet_size + 1);
 		memset((*strdata), 'X', packet_size);
 		strcpy((*data), (*strdata));
@@ -225,7 +226,6 @@ uint64_t rsend(struct datagram_node *head, uint16_t send_size, uint16_t duration
 };
 char* create_udp_packet(uint8_t protocol, uint8_t ttl, uint8_t tos, char *daddr, char *saddr, uint16_t src_port, uint16_t dst_port, uint16_t packet_size) {
 	uint16_t header_len = (sizeof(struct iphdr) + sizeof(struct udphdr));
-	printf("Header_len = %d\n",header_len);
 	uint16_t byte_size = header_len + (packet_size - 64);
 	char *datagram, pseudogram[4096], *data, *strdata;
 	datagram = malloc(byte_size);
@@ -246,21 +246,16 @@ char* create_udp_packet(uint8_t protocol, uint8_t ttl, uint8_t tos, char *daddr,
 	udph = (struct udphdr *) (datagram + sizeof(struct iphdr));
 	data = datagram + header_len;
 	pad_data(header_len, packet_size, &data, &strdata);
-	printf("%s\n",data);
 	uint16_t data_len = strlen(data);
-	printf("Data length = %d\n",data_len);
 	/* Set IP length - inclusive of all encapsulated data */
 	iph->tot_len = header_len + data_len;
-	printf("Size of IP packet: %d\n",iph->tot_len);
 	udph->dest = htons(dst_port);
 	udph->len = htons(sizeof(struct udphdr) + data_len);
-	printf("UDP length: %d\n",ntohs(udph->len));
 	udph->source = htons(src_port);
 	
 	upsh = (struct udp_pseudo_hdr *) pseudogram;
 	set_udp_phdr(&upsh, iph, src_port, dst_port, data, pseudogram);
 	udph->check = csum((unsigned short *)upsh, (sizeof(struct udp_pseudo_hdr) + data_len));
-	printf("UDP Checksum: %04x\n",ntohs(udph->check));
 	return datagram;
 };
 char* create_gre_packet(uint8_t protocol, uint8_t ttl, uint8_t tos, char *daddr, char *saddr, uint16_t src_port, uint16_t dst_port, uint16_t packet_size) {
@@ -426,16 +421,19 @@ int main(int argc, char *argv[]) {
 	struct datagram_node *tail = NULL;
 	switch(protocol){
 		case UDP:
-			send_size = sizeof(struct iphdr) + sizeof(struct udphdr) + (packet_size - (sizeof(struct udphdr) + sizeof(struct iphdr) + ETH_HDR_LEN));
+			send_size = UDP_L3_LEN + (packet_size - (sizeof(struct udphdr) + sizeof(struct iphdr) + ETH_HDR_LEN));
 			for(iterator = 0;iterator < num_flows;iterator++) {
 				char *datagram = create_udp_packet(protocol,ttl,tos,destination,source,src_port,dst_port,packet_size);
 				append_datagram_node(&head,datagram);
 				src_port++;
 			}
-
 			break;
 		case GRE:
-			send_size = sizeof(struct iphdr) + sizeof(struct grehdr) + sizeof(struct iphdr) + sizeof(struct udphdr) + (packet_size - 64);
+			send_size = GRE_L3_LEN + (packet_size - (sizeof(struct udphdr) + sizeof(struct iphdr) + ETH_HDR_LEN + sizeof(struct iphdr) + sizeof(struct grehdr)));
+			if(send_size < GRE_L3_LEN) {
+				fprintf(stderr,"GRE encapsulated traffic must be at least 70 bytes\n");
+				exit(EXIT_FAILURE);
+			}
 			for(iterator = 0;iterator < num_flows;iterator++) {
 				char *datagram = create_gre_packet(protocol,ttl,tos,destination,source,src_port,dst_port,packet_size);
 				append_datagram_node(&head,datagram);
