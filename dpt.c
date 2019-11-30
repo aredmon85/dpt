@@ -155,15 +155,10 @@ uint64_t usend(struct datagram_node *head, uint16_t send_size, uint16_t duration
 	clock_gettime(CLOCK_MONOTONIC_RAW,&start);
 	clock_gettime(CLOCK_MONOTONIC_RAW,&current);
 	while(diff_time < usec_duration) {
-		if(sendto(socket, node_to_send->datagram, send_size, MSG_NOSIGNAL | MSG_DONTWAIT, sin, sin_size) < 0) {
-			errnum = errno;
-			if(errnum != 11) {
-				/* Don't exit if socket would block/be unavailable - just try again */
+		if(sendto(socket, node_to_send->datagram, send_size, MSG_NOSIGNAL, sin, sin_size) < 0) {
+				errnum = errno;
 				fprintf(stderr,"Failed to sendto packet: %s\n", strerror(errnum));
 				exit(EXIT_FAILURE);
-			} else {
-				total_packets_sent--;
-			}
 		}
 		total_packets_sent++;
 		if(total_packets_sent % 1000 == 0) {
@@ -192,16 +187,10 @@ uint64_t rsend(struct datagram_node *head, uint16_t send_size, uint16_t duration
 	while(diff_time < usec_duration) {
 		/* User defined packet rate - define a bucket of packets to send per quantum, send so long as the bucket is non-zero, and refill the bucket every quantum */
 		if(packet_rate_bucket > 0) {
-			if(sendto(socket, node_to_send->datagram, send_size, MSG_NOSIGNAL | MSG_DONTWAIT, sin, sin_size) < 0) {
-				errnum = errno;
-				if(errnum != 11) {
-					/* Don't exit if socket would block/be unavailable - just try again */
+			if(sendto(socket, node_to_send->datagram, send_size, MSG_NOSIGNAL, sin, sin_size) < 0) {
+					errnum = errno;
 					fprintf(stderr,"Failed to sendto packet: %s\n", strerror(errnum));
 					exit(EXIT_FAILURE);
-				} else {
-					total_packets_sent--;
-					packet_rate_bucket++;
-				}
 			}
 			total_packets_sent++;
 			packet_rate_bucket--;
