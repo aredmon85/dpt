@@ -352,10 +352,10 @@ int main(int argc, char *argv[]) {
 				duration = atoi(optarg);
 				break;
 			case 'r':
-				if(atoi(optarg) <= 1000000 && atoi(optarg) >= 1000 && (atoi(optarg) % 10000 == 0)){
+				if(atoi(optarg) <= 1000000 && atoi(optarg) >= 1000 && (atoi(optarg) % 1000 == 0)){
 					packet_rate = atoi(optarg);
 				} else {
-					fprintf(stderr,"Packet rate must be between 10000 and 1000000 packets/sec, and in increments of 10000\n");
+					fprintf(stderr,"Packet rate must be between 1000 and 1000000 packets/sec, and in increments of 1000\n");
 					exit(EXIT_FAILURE);
 				}
 				break;
