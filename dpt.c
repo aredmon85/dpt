@@ -184,7 +184,6 @@ uint64_t rsend(struct datagram_node *head, uint16_t send_size, uint16_t duration
 	clock_gettime(CLOCK_MONOTONIC_RAW,&current);
 	clock_gettime(CLOCK_MONOTONIC_RAW,&rate_quantum_start);
 	clock_gettime(CLOCK_MONOTONIC_RAW,&rate_quantum_current);
-	printf("Sending %d packet per quantum\n",packet_per_quantum);
 	while(diff_time < usec_duration) {
 		/* User defined packet rate - define a bucket of packets to send per quantum, send so long as the bucket is non-zero, and refill the bucket every quantum */
 		if(packet_rate_bucket > 0) {
@@ -197,12 +196,12 @@ uint64_t rsend(struct datagram_node *head, uint16_t send_size, uint16_t duration
 			packet_rate_bucket--;
 		}
 		clock_gettime(CLOCK_MONOTONIC_RAW,&rate_quantum_current);
-		/* Sample 1000 times a second */
+		/* Sample 1000 times a second or once every millisecond - calculate the time between quantum start and quantum current and if it exceeds the defined quantum value, refill the send bucket */
 		if(((rate_quantum_current.tv_sec - rate_quantum_start.tv_sec) * 1000000 + (rate_quantum_current.tv_nsec - rate_quantum_start.tv_nsec) / 1000) >= QUANTUM) {
 			packet_rate_bucket = packet_per_quantum;
 			clock_gettime(CLOCK_MONOTONIC_RAW,&rate_quantum_start);
 		}
-		if(total_packets_sent % 100 == 0) {
+		if(total_packets_sent % 1000 == 0) {
 			clock_gettime(CLOCK_MONOTONIC_RAW,&current);
 		}
 		diff_time = (current.tv_sec - start.tv_sec) * 1000000 + (current.tv_nsec - start.tv_nsec) / 1000;
